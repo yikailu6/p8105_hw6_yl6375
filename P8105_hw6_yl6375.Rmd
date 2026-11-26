@@ -280,6 +280,731 @@ female victims, although the magnitude and statistical
 significance of this association vary across cities.
 
 
+#Problem 2
+
+```{r}
+library(p8105.datasets)
+library(tidyverse)
+library(broom)
+library(p8105.datasets)
+
+```
+
+## Data import and preparation
+
+```{r}
+data("weather_df")
+
+weather_df =
+  weather_df |>
+  select(tmax, tmin, prcp) |>
+  drop_na()
+
+weather_df |>
+  head() |>
+  knitr::kable()
+```
+```{r}
+dim(weather_df)
+
+summary(weather_df)
+```
+## Original linear regression model
+
+We first fit a linear regression model using the original
+weather dataset to obtain reference estimates for the
+subsequent bootstrap analysis.
+
+```{r}
+weather_fit =
+  lm(
+    tmax ~ tmin + prcp,
+    data = weather_df
+  )
+
+weather_fit |>
+  broom::tidy() |>
+  knitr::kable(digits = 4)
+```
+```{r}
+original_r_squared =
+  weather_fit |>
+  broom::glance() |>
+  pull(r.squared)
+
+original_ratio =
+  weather_fit |>
+  broom::tidy() |>
+  select(term, estimate) |>
+  pivot_wider(
+    names_from = term,
+    values_from = estimate
+  ) |>
+  mutate(beta_ratio = tmin / prcp) |>
+  pull(beta_ratio)
+
+tibble(
+  r_squared = original_r_squared,
+  beta_ratio = original_ratio
+) |>
+  knitr::kable(digits = 4)
+```
+```{r}
+#create bootstrap result
+boot_sample = function(df) {
+  slice_sample(
+    df,
+    n = nrow(df),
+    replace = TRUE
+  )
+}
+
+boot_sample = function(df) {
+  slice_sample(
+    df,
+    n = nrow(df),
+    replace = TRUE
+  )
+}
+```
+
+```{r}
+set.seed(123)
+
+bootstrap_results =
+  tibble(bootstrap_id = 1:5000) |>
+  mutate(
+    boot_sample = map(
+      bootstrap_id,
+      \(i) boot_sample(weather_df)
+    ),
+    model = map(
+      boot_sample,
+      \(df) lm(tmax ~ tmin + prcp, data = df)
+    ),
+    r_squared = map_dbl(
+      model,
+      \(fit) broom::glance(fit) |> pull(r.squared)
+    ),
+    coefficients = map(
+      model,
+      \(fit) broom::tidy(fit)
+    )
+  ) |>
+  select(bootstrap_id, r_squared, coefficients) |>
+  unnest(coefficients) |>
+  select(bootstrap_id, r_squared, term, estimate) |>
+  pivot_wider(
+    names_from = term,
+    values_from = estimate
+  ) |>
+  mutate(beta_ratio = tmin / prcp) |>
+  select(bootstrap_id, r_squared, beta_ratio)
+
+dim(bootstrap_results)
+
+bootstrap_results |>
+  head(10) |>
+  knitr::kable(digits = 4)
+```
+```{r}
+bootstrap_results |>
+  summarize(
+    invalid_r_squared = sum(!is.finite(r_squared)),
+    invalid_beta_ratio = sum(!is.finite(beta_ratio))
+  ) |>
+  knitr::kable()
+```
+## Bootstrap distributions
+
+We visualize the bootstrap distributions of R-squared
+and the coefficient ratio to examine their shapes,
+centers, and variability. The dashed vertical lines
+represent the estimates obtained from the original
+dataset.
+
+```{r}
+bootstrap_results |>
+  ggplot(aes(x = r_squared)) +
+  geom_density(
+    fill = "steelblue",
+    color = "steelblue4",
+    alpha = 0.4
+  ) +
+  geom_vline(
+    xintercept = original_r_squared,
+    color = "red",
+    linetype = "dashed"
+  ) +
+  labs(
+    title = "Bootstrap Distribution of R-squared",
+    subtitle = "Based on 5,000 bootstrap samples",
+    x = "R-squared",
+    y = "Density"
+  ) +
+  theme_minimal()
+```
+```{r}
+bootstrap_results |>
+  ggplot(aes(x = beta_ratio)) +
+  geom_density(
+    fill = "seagreen3",
+    color = "seagreen4",
+    alpha = 0.4
+  ) +
+  geom_vline(
+    xintercept = original_ratio,
+    color = "red",
+    linetype = "dashed"
+  ) +
+  labs(
+    title = "Bootstrap Distribution of the Coefficient Ratio",
+    subtitle = "Based on 5,000 bootstrap samples",
+    x = expression(hat(beta)[1] / hat(beta)[2]),
+    y = "Density"
+  ) +
+  theme_minimal()
+```
+## Bootstrap confidence intervals
+
+We construct 95% percentile-based bootstrap confidence
+intervals using the 2.5th and 97.5th percentiles of the
+bootstrap distributions for both statistics.
+
+```{r}
+bootstrap_ci =
+  bootstrap_results |>
+  pivot_longer(
+    cols = c(r_squared, beta_ratio),
+    names_to = "statistic",
+    values_to = "estimate"
+  ) |>
+  group_by(statistic) |>
+  summarize(
+    bootstrap_mean = mean(estimate),
+    bootstrap_se = sd(estimate),
+    conf.low = quantile(estimate, 0.025),
+    conf.high = quantile(estimate, 0.975),
+    .groups = "drop"
+  )
+
+bootstrap_ci |>
+  knitr::kable(
+    digits = 4,
+    col.names = c(
+      "Statistic",
+      "Bootstrap Mean",
+      "Bootstrap SE",
+      "95% CI Lower",
+      "95% CI Upper"
+    ),
+    caption = "95% percentile-based bootstrap confidence intervals"
+  )
+```
+```{r}
+r_squared_ci =
+  bootstrap_ci |>
+  filter(statistic == "r_squared")
+
+beta_ratio_ci =
+  bootstrap_ci |>
+  filter(statistic == "beta_ratio")
+```
+
+## Final interpretation
+
+Based on `r nrow(bootstrap_results)` bootstrap samples,
+the bootstrap distribution of R-squared is tightly
+concentrated around its original estimate of
+`r round(original_r_squared, 4)`, with a bootstrap mean
+of `r round(r_squared_ci$bootstrap_mean, 4)` and a
+standard error of `r round(r_squared_ci$bootstrap_se, 4)`.
+The 95% bootstrap confidence interval is
+(`r round(r_squared_ci$conf.low, 4)`,
+`r round(r_squared_ci$conf.high, 4)`).
+The narrow confidence interval suggests that the
+estimated proportion of variation in maximum temperature
+explained by the model is relatively stable across
+bootstrap samples.
+
+The bootstrap distribution of the coefficient ratio
+is unimodal and negatively skewed, with a longer tail
+toward more negative values. The original estimate is
+`r round(original_ratio, 4)`, while the bootstrap mean
+is `r round(beta_ratio_ci$bootstrap_mean, 4)`.
+The 95% bootstrap confidence interval is
+(`r round(beta_ratio_ci$conf.low, 4)`,
+`r round(beta_ratio_ci$conf.high, 4)`).
+The asymmetric distribution illustrates the usefulness
+of percentile-based bootstrap confidence intervals
+when a normal approximation may be inappropriate.
+
+Overall, the regression model explains a large
+proportion of the observed variation in maximum
+temperature. Bootstrap resampling provides an empirical
+approach to quantifying uncertainty in both R-squared
+and the ratio of regression coefficients without
+requiring a normal sampling distribution.
+
+
+
+# Problem 3
+
+## Data import and cleaning
+
+We investigate factors associated with infant birthweight
+using multiple linear regression and compare the predictive
+performance of three regression models using cross-validation.
+
+```{r}
+birthweight_df =
+  read_csv("data/birthweight.csv") |>
+  janitor::clean_names() |>
+  mutate(
+    babysex = factor(
+      babysex,
+      levels = c(1, 2),
+      labels = c("Male", "Female")
+    ),
+    frace = factor(
+      frace,
+      levels = c(1, 2, 3, 4, 8, 9),
+      labels = c(
+        "White", "Black", "Asian",
+        "Puerto Rican", "Other", "Unknown"
+      )
+    ),
+    mrace = factor(
+      mrace,
+      levels = c(1, 2, 3, 4, 8),
+      labels = c(
+        "White", "Black", "Asian",
+        "Puerto Rican", "Other"
+      )
+    ),
+    malform = factor(
+      malform,
+      levels = c(0, 1),
+      labels = c("Absent", "Present")
+    )
+  )
+
+dim(birthweight_df)
+
+glimpse(birthweight_df)
+```
+```{r}
+missing_summary =
+  birthweight_df |>
+  summarize(
+    across(everything(), ~ sum(is.na(.x)))
+  ) |>
+  pivot_longer(
+    everything(),
+    names_to = "variable",
+    values_to = "n_missing"
+  )
+
+missing_summary |>
+  knitr::kable(
+    col.names = c("Variable", "Missing observations"),
+    caption = "Missing data summary"
+  )
+
+sum(!complete.cases(birthweight_df))
+```
+After data cleaning, the dataset contains
+`r nrow(birthweight_df)` observations and
+`r ncol(birthweight_df)` variables.
+Infant sex, maternal race, paternal race, and the
+presence of malformations were converted to categorical
+variables. The dataset contains
+`r sum(is.na(birthweight_df))` missing values and
+`r sum(!complete.cases(birthweight_df))` incomplete
+observations. Therefore, all observations can be retained
+for the subsequent regression analysis.
+
+
+## Proposed regression model
+
+A hypothesis-driven approach was used to select predictors
+for the proposed birthweight regression model. Infant sex,
+head circumference, birth length, and gestational age were
+included to account for infant size and development.
+Maternal smoking, pre-pregnancy BMI, pregnancy weight gain,
+maternal age, and maternal race were included to account
+for maternal behavioral, physiological, and demographic
+characteristics.
+
+A multiple linear regression model was fitted using
+birthweight as the continuous outcome and the selected
+predictors as main effects.
+
+```{r}
+birthweight_fit =
+  lm(
+    bwt ~ babysex + bhead + blength + gaweeks +
+      smoken + ppbmi + wtgain + momage + mrace,
+    data = birthweight_df
+  )
+
+birthweight_fit |>
+  broom::tidy(conf.int = TRUE) |>
+  knitr::kable(
+    digits = 3,
+    caption = "Estimated coefficients for the proposed model"
+  )
+```
+```{r}
+birthweight_fit |>
+  broom::glance() |>
+  select(r.squared, adj.r.squared, sigma, nobs) |>
+  knitr::kable(
+    digits = 4,
+    col.names = c(
+      "R-squared",
+      "Adjusted R-squared",
+      "Residual standard error",
+      "Observations"
+    ),
+    caption = "Summary of proposed regression model"
+  )
+```
+## Model diagnostics
+
+```{r}
+birthweight_diagnostics =
+  birthweight_df |>
+  modelr::add_predictions(birthweight_fit) |>
+  modelr::add_residuals(birthweight_fit)
+
+birthweight_diagnostics |>
+  select(bwt, pred, resid) |>
+  head() |>
+  knitr::kable(digits = 2)
+```
+```{r, fig.width = 8, fig.height = 5}
+birthweight_diagnostics |>
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point(
+    alpha = 0.25,
+    color = "steelblue"
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed",
+    color = "red"
+  ) +
+  geom_smooth(
+    method = "loess",
+    se = FALSE,
+    color = "darkorange"
+  ) +
+  labs(
+    title = "Residuals versus Fitted Values",
+    subtitle = "Diagnostic plot for the proposed birthweight model",
+    x = "Fitted birthweight (grams)",
+    y = "Residuals (grams)"
+  ) +
+  theme_minimal()
+```
+The residuals are generally centered around zero for
+most fitted birthweights, suggesting that the proposed
+linear regression model provides a reasonable fit for
+the majority of observations. However, the smoothing
+curve deviates substantially from zero at lower fitted
+values, indicating potential nonlinearity and systematic
+underprediction in this region. Several large residuals
+and negative fitted birthweights are also observed.
+The varying spread of residuals suggests potential
+heteroscedasticity. These findings indicate that the
+model has limitations, particularly for infants with
+extreme fitted birthweights.
+
+## Alternative regression models
+
+To evaluate the predictive performance of the proposed
+model, two alternative regression models were fitted.
+The first includes birth length and gestational age
+as main effects, while the second includes head
+circumference, birth length, infant sex, and all
+possible interactions among these three predictors.
+
+```{r}
+length_age_fit =
+  lm(
+    bwt ~ blength + gaweeks,
+    data = birthweight_df
+  )
+
+interaction_fit =
+  lm(
+    bwt ~ bhead * blength * babysex,
+    data = birthweight_df
+  )
+```
+
+```{r}
+model_comparison =
+  tibble(
+    model = c(
+      "Proposed model",
+      "Length and gestational age",
+      "Full interaction model"
+    ),
+    fit = list(
+      birthweight_fit,
+      length_age_fit,
+      interaction_fit
+    )
+  ) |>
+  mutate(
+    model_summary = map(fit, broom::glance)
+  ) |>
+  select(-fit) |>
+  unnest(model_summary) |>
+  select(model, r.squared, adj.r.squared, sigma)
+
+model_comparison |>
+  knitr::kable(
+    digits = 4,
+    col.names = c(
+      "Model",
+      "R-squared",
+      "Adjusted R-squared",
+      "Residual standard error"
+    ),
+    caption = "Comparison of regression model fit"
+  )
+```
+```{r}
+set.seed(123)
+
+cv_df =
+  birthweight_df |>
+  modelr::crossv_mc(100, test = 0.2) |>
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+
+cv_df
+```
+```{r}
+cv_df =
+  cv_df |>
+  mutate(
+    proposed_mod = map(
+      train,
+      \(df) lm(formula(birthweight_fit), data = df)
+    ),
+    length_age_mod = map(
+      train,
+      \(df) lm(formula(length_age_fit), data = df)
+    ),
+    interaction_mod = map(
+      train,
+      \(df) lm(formula(interaction_fit), data = df)
+    )
+  )
+
+cv_df
+```
+#I want a better RMSE better predictive performance
+```{r}
+cv_df =
+  cv_df |>
+  mutate(
+    rmse_proposed = map2_dbl(
+      proposed_mod, test, modelr::rmse
+    ),
+    rmse_length_age = map2_dbl(
+      length_age_mod, test, modelr::rmse
+    ),
+    rmse_interaction = map2_dbl(
+      interaction_mod, test, modelr::rmse
+    )
+  )
+
+cv_df |>
+  select(.id, starts_with("rmse_")) |>
+  head(10) |>
+  knitr::kable(digits = 3)
+```
+```{r}
+cv_summary =
+  cv_df |>
+  select(starts_with("rmse_")) |>
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse"
+  ) |>
+  mutate(
+    model = recode(
+      model,
+      rmse_proposed = "Proposed model",
+      rmse_length_age = "Length and gestational age",
+      rmse_interaction = "Full interaction model"
+    )
+  ) |>
+  group_by(model) |>
+  summarize(
+    mean_rmse = mean(rmse),
+    median_rmse = median(rmse),
+    sd_rmse = sd(rmse),
+    .groups = "drop"
+  ) |>
+  arrange(mean_rmse)
+
+cv_summary |>
+  knitr::kable(
+    digits = 3,
+    col.names = c(
+      "Model",
+      "Mean RMSE",
+      "Median RMSE",
+      "SD of RMSE"
+    ),
+    caption = "Comparison of cross-validated prediction errors"
+  )
+```
+## Comparison of cross-validated prediction errors
+
+```{r}
+cv_plot_df =
+  cv_df |>
+  select(.id, starts_with("rmse_")) |>
+  pivot_longer(
+    cols = starts_with("rmse_"),
+    names_to = "model",
+    values_to = "rmse"
+  ) |>
+  mutate(
+    model = recode(
+      model,
+      rmse_proposed = "Proposed model",
+      rmse_length_age = "Length and gestational age",
+      rmse_interaction = "Full interaction model"
+    ),
+    model = fct_reorder(model, rmse, .fun = median)
+  )
+```
+
+```{r}
+cv_plot_df |>
+  ggplot(aes(x = model, y = rmse, fill = model)) +
+  geom_violin(
+    alpha = 0.6,
+    trim = FALSE
+  ) +
+  geom_boxplot(
+    width = 0.12,
+    fill = "white",
+    outlier.shape = NA
+  ) +
+  stat_summary(
+    fun = mean,
+    geom = "point",
+    shape = 18,
+    size = 3,
+    color = "red"
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Proposed model" = "#4E79A7",
+      "Full interaction model" = "#59A14F",
+      "Length and gestational age" = "#F28E2B"
+    )
+  ) +
+  labs(
+    title = "Comparison of Cross-Validated Prediction Errors",
+    subtitle = str_c(
+      "Based on ", nrow(cv_df),
+      " Monte Carlo cross-validation repetitions"
+    ),
+    x = "Regression model",
+    y = "RMSE (grams)",
+    caption = "Red diamonds represent mean RMSE."
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(
+      angle = 15,
+      hjust = 1
+    )
+  )
+```
+```{r}
+proposed_cv =
+  cv_summary |>
+  filter(model == "Proposed model")
+
+interaction_cv =
+  cv_summary |>
+  filter(model == "Full interaction model")
+
+length_age_cv =
+  cv_summary |>
+  filter(model == "Length and gestational age")
+
+improvement_simple =
+  (length_age_cv$mean_rmse -
+     proposed_cv$mean_rmse) /
+  length_age_cv$mean_rmse
+
+improvement_interaction =
+  (interaction_cv$mean_rmse -
+     proposed_cv$mean_rmse) /
+  interaction_cv$mean_rmse
+```
+
+
+## Final interpretation
+
+The proposed regression model explains
+`r scales::percent(broom::glance(birthweight_fit)$r.squared, accuracy = 0.1)`
+of the observed variation in birthweight. The residuals
+are generally centered around zero for the majority of
+observations. However, the residual plot shows curvature
+at lower fitted values and several large residuals,
+suggesting that the model may not adequately capture
+birthweight variation among some observations.
+
+Based on `r nrow(cv_df)` Monte Carlo cross-validation
+repetitions, the proposed model achieves the lowest
+mean RMSE of
+`r round(proposed_cv$mean_rmse, 2)` grams,
+compared with
+`r round(interaction_cv$mean_rmse, 2)` grams for the
+full interaction model and
+`r round(length_age_cv$mean_rmse, 2)` grams for the
+length and gestational age model.
+
+The proposed model reduces mean prediction error by
+`r scales::percent(improvement_simple, accuracy = 0.1)`
+relative to the length and gestational age model and
+`r scales::percent(improvement_interaction, accuracy = 0.1)`
+relative to the full interaction model.
+
+The violin plot also shows that the proposed model
+has lower prediction errors and less variability
+across repeated training and testing splits.
+
+Overall, the proposed model provides the best predictive
+performance among the three candidate models. Although
+the residual diagnostics suggest some limitations,
+the cross-validation results support selecting the
+proposed model for birthweight prediction.
+
+
+
+
+
+
+
+
 
 
 
